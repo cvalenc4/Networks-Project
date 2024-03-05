@@ -6,84 +6,121 @@
 #include <stdio.h>
 #include <errno.h>
 #include <unistd.h>
-
+#include <stdlib.h>
+#include <signal.h>
 #include <iostream>
+#include <fstream>
+#include <string>
 #include <sstream>
 
-int
-main()
-{
-  // create a socket using TCP IP
-  int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+volatile sig_atomic_t stop;
 
-  // allow others to reuse the address
-  int yes = 1;
-  if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1) {
-    perror("setsockopt");
-    return 1;
-  }
+void interrupt(int signum) {
+    stop = 1;
+}
 
-  // bind address to socket
-  struct sockaddr_in addr;
-  addr.sin_family = AF_INET;
-  addr.sin_port = htons(40000); // the server will listen on port 4000
-  addr.sin_addr.s_addr = inet_addr("127.0.0.1"); // open socket on localhost IP address for server
-  memset(addr.sin_zero, '\0', sizeof(addr.sin_zero));
-
-  if (bind(sockfd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
-    perror("bind");
-    return 2;
-  }
-
-  // set socket to listen status
-  if (listen(sockfd, 1) == -1) {
-    perror("listen");
-    return 3;
-  }
-
-  // accept a new connection from a client
-  struct sockaddr_in clientAddr;
-  socklen_t clientAddrSize = sizeof(clientAddr);
-  int clientSockfd = accept(sockfd, (struct sockaddr*)&clientAddr, &clientAddrSize);
-
-  if (clientSockfd == -1) {
-    perror("accept");
-    return 4;
-  }
-
-  char ipstr[INET_ADDRSTRLEN] = {'\0'};
-  inet_ntop(clientAddr.sin_family, &clientAddr.sin_addr, ipstr, sizeof(ipstr));
-  std::cout << "Accept a connection from: " << ipstr << ":" <<
-    ntohs(clientAddr.sin_port) << std::endl;
-
-  // receive/send data (1 message) from/to the client
-  bool isEnd = false;
-  char buf[20] = {0};
-  std::stringstream ss;
-
-  while (!isEnd) {
-    memset(buf, '\0', sizeof(buf));
-
-    if (recv(clientSockfd, buf, 20, 0) == -1) {
-      perror("recv");
-      return 5;
+void handleConnection(int clientSocketfd, const std::string& dir, int connectionID) {
+    // create output file path and open it
+    std::string filePath = dir + "/" + std::to_string(connectionID) + ".file";
+    std::ofstream outFile(filePath, std::ios::binary);
+    if (!outFile.is_open()) {
+        std::cerr << "ERROR: Could not open file for writing." << std::endl;
+        return;
     }
 
-    ss << buf << std::endl;
-    std::cout << buf << std::endl;
+    char buffer[1024];
+    ssize_t bytesRead;
 
-    if (send(clientSockfd, buf, 20, 0) == -1) {
-      perror("send");
-      return 6;
+    while (!stop) {
+        // read client file content
+        bytesRead = recv(clientSocketfd, buffer, sizeof(buffer), 0);
+        if (bytesRead < 0) {
+            std::cerr << "ERROR: " << strerror(errno) << std::endl;
+            break; 
+        } else if (bytesRead == 0) {
+            // client closed connection
+            break; 
+        } else {
+            // write content to new file
+            outFile.write(buffer, bytesRead);
+        }
     }
 
-    if (ss.str() == "close\n")
-      break;
+    outFile.close();
+}
 
-    ss.str("");
-  }
+int main(int argc, char* argv[]) {
+    if (argc != 3) {
+        std::cerr << "Usage: " << argv[0] << " <PORT> <FILE-DIR>" << std::endl;
+        return 1;
+    }
 
-  close(clientSockfd);
+    int port = atoi(argv[1]);
+    if (port <= 1023 || port > 65535) {
+        std::cerr << "ERROR: Invalid port number" << std::endl;
+        return 2;
+    }
 
-  return 0;
+    std::string fileDir = argv[2];
+
+    // create a socket using TCP IP
+    int sockfd = socket(AF_INET, SOCK_STREAM, 0);
+    if (sockfd == -1) {
+        std::cerr << "ERROR: " << strerror(errno) << std::endl;
+        return 3;
+    }
+
+    // allow others to reuse the address
+    int yes = 1;
+    if (setsockopt(sockfd, SOL_SOCKET, SO_REUSEADDR, &yes, sizeof(int)) == -1) {
+        std::cerr << "ERROR: " << strerror(errno) << std::endl;
+        close(sockfd);
+        return 4;
+    }
+
+    // bind address to socket
+    struct sockaddr_in addr;
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(port);
+    addr.sin_addr.s_addr = INADDR_ANY;
+    memset(addr.sin_zero, '\0', sizeof(addr.sin_zero));
+
+    if (bind(sockfd, (struct sockaddr*)&addr, sizeof(addr)) == -1) {
+        std::cerr << "ERROR: " << strerror(errno) << std::endl;
+        close(sockfd);
+        return 5;
+    }
+
+    // set socket to listen status
+    if (listen(sockfd, 1) == -1) {
+        std::cerr << "ERROR: " << strerror(errno) << std::endl;
+        close(sockfd);
+        return 6;
+    }
+
+    signal(SIGQUIT, interrupt);
+    signal(SIGTERM, interrupt);
+
+    // connection counter
+    int connectionID = 0;
+    while (!stop) {
+        // accept a new connection from a client
+        struct sockaddr_in clientAddr;
+        socklen_t clientAddrSize = sizeof(clientAddr);
+        int clientSocketfd = accept(sockfd, (struct sockaddr*)&clientAddr, &clientAddrSize);
+        if (clientSocketfd == -1) {
+            if (errno == EINTR) {
+                break; 
+            }
+            std::cerr << "ERROR: " << strerror(errno) << std::endl;
+            continue;
+        }
+
+        connectionID += 1;
+        handleConnection(clientSocketfd, fileDir, connectionID);
+        close(clientSocketfd);
+    }
+
+    close(sockfd);
+    return 0;
 }
