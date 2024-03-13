@@ -1,4 +1,5 @@
 #include <sys/types.h>
+#include <netdb.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -13,11 +14,6 @@
 #include <string>
 #include <sstream>
 
-volatile sig_atomic_t stop;
-
-void interrupt(int signum) {
-    stop = 1;
-}
 
 void handleConnection(int clientSocketfd, const std::string& dir, int connectionID) {
     // create output file path and open it
@@ -31,15 +27,29 @@ void handleConnection(int clientSocketfd, const std::string& dir, int connection
     char buffer[1024];
     ssize_t bytesRead;
 
-    while (!stop) {
+    // set up timeout
+    struct timeval tv;
+    tv.tv_sec = 10; // 10 second timeout
+    tv.tv_usec = 0;
+    setsockopt(clientSocketfd, SOL_SOCKET, SO_RCVTIMEO, (const char*)&tv, sizeof(tv));
+
+    while (true) {
         // read client file content
         bytesRead = recv(clientSocketfd, buffer, sizeof(buffer), 0);
         if (bytesRead < 0) {
-            std::cerr << "ERROR: " << strerror(errno) << std::endl;
-            break; 
+            if (errno == EAGAIN || errno == EWOULDBLOCK) {
+                std::cerr << "ERROR: Timeout occurred. No data recieved." << std::endl;
+                outFile.seekp(0);
+                outFile.clear();
+                outFile << "ERROR";
+                break;
+            } else {
+                std::cerr << "ERROR: " << strerror(errno) << std::endl;
+                break;
+            }
         } else if (bytesRead == 0) {
             // client closed connection
-            break; 
+            break;
         } else {
             // write content to new file
             outFile.write(buffer, bytesRead);
@@ -98,19 +108,16 @@ int main(int argc, char* argv[]) {
         return 6;
     }
 
-    signal(SIGQUIT, interrupt);
-    signal(SIGTERM, interrupt);
-
     // connection counter
     int connectionID = 0;
-    while (!stop) {
+    while (true) {
         // accept a new connection from a client
         struct sockaddr_in clientAddr;
         socklen_t clientAddrSize = sizeof(clientAddr);
         int clientSocketfd = accept(sockfd, (struct sockaddr*)&clientAddr, &clientAddrSize);
         if (clientSocketfd == -1) {
             if (errno == EINTR) {
-                break; 
+                break;
             }
             std::cerr << "ERROR: " << strerror(errno) << std::endl;
             continue;
