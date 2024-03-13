@@ -9,7 +9,8 @@
 #include <iostream>
 #include <fstream>
 #include <fcntl.h>
-#include <netdb.h> 
+#include <netdb.h>
+#include <signal.h>
 
 int main(int argc, char* argv[]) {
     if (argc != 4) {
@@ -23,10 +24,10 @@ int main(int argc, char* argv[]) {
 
     struct addrinfo hints, *res;
     memset(&hints, 0, sizeof(hints));
-    hints.ai_family = AF_UNSPEC; 
-    hints.ai_socktype = SOCK_STREAM; 
-    hints.ai_flags = AI_PASSIVE; 
-    hints.ai_protocol = 0; 
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_STREAM;
+    hints.ai_flags = AI_PASSIVE;
+    hints.ai_protocol = 0;
 
     int status;
     if ((status = getaddrinfo(hostname, port, &hints, &res)) != 0) {
@@ -42,6 +43,12 @@ int main(int argc, char* argv[]) {
         return 2;
     }
 
+    // Set up timeout
+    struct timeval tv;
+    tv.tv_sec = 10;
+    tv.tv_usec = 0;
+    setsockopt(sockfd, SOL_SOCKET,SO_SNDTIMEO, (const char*)&tv, sizeof(struct timeval));
+
     // Try to connect to the server:
     if (connect(sockfd, res->ai_addr, res->ai_addrlen) < 0) {
         std::cerr << "ERROR: Connection failed" << std::endl;
@@ -49,7 +56,6 @@ int main(int argc, char* argv[]) {
         freeaddrinfo(res);
         return 3;
     }
-
     freeaddrinfo(res);
 
     // open file
@@ -59,7 +65,7 @@ int main(int argc, char* argv[]) {
         close(sockfd);
         return 4;
     }
-    
+
     char buffer[1024];
     while (!file.eof()) {
         // read file
